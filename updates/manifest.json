@@ -1,0 +1,8 @@
+{
+    "nativeVersion":  "1.0.0",
+    "version":  "1.0.1",
+    "assets":  [
+
+               ],
+    "changelog":  "Mejora de interfaz y reproducción de música con YouTube IFrame Engine. Descargas offline y modo MP3 habilitados."
+}
