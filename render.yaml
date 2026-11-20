@@ -1,0 +1,13 @@
+# Render.com — Configuración de despliegue para NOVA MUSIC Backend
+services:
+  - type: web
+    name: nova-music-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"

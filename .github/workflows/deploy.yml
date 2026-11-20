@@ -1,26 +1,21 @@
 name: 🚀 Deploy NOVA MUSIC a GitHub Pages
 
 on:
-  # Se ejecuta automáticamente cada vez que haces push a la rama main
   push:
     branches:
       - main
-  # Permite ejecutarlo manualmente desde la pestaña Actions en GitHub
   workflow_dispatch:
 
-# Permisos necesarios para publicar en GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Evita que dos deploys corran al mismo tiempo
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  # ─── Paso 1: Construir el proyecto ───────────────────────────────────────────
   build:
     name: 🏗️ Build
     runs-on: ubuntu-latest
@@ -37,15 +32,18 @@ jobs:
       - name: 📦 Instalar dependencias
         run: npm ci
 
-      - name: 🔨 Construir proyecto (npm run build)
+      - name: 🔨 Construir proyecto con URL del backend de Render
         run: npm run build
+        env:
+          # URL del backend en Render para streaming de canciones completas
+          # Configurar este secret en: GitHub → Settings → Secrets → VITE_STREAM_API_URL
+          VITE_STREAM_API_URL: ${{ secrets.VITE_STREAM_API_URL }}
 
       - name: 📤 Subir artefacto de Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
 
-  # ─── Paso 2: Publicar en GitHub Pages ────────────────────────────────────────
   deploy:
     name: 🌐 Deploy a GitHub Pages
     needs: build
