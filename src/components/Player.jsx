@@ -12,7 +12,6 @@ import {
   VolumeX, 
   Heart, 
   ListMusic,
-  Tv,
   Loader2
 } from 'lucide-react';
 import { useMusic } from '../context/MusicContext';
@@ -39,8 +38,6 @@ export default function Player({ onToggleQueue }) {
     likedSongIds,
     toggleLike,
     formatTime,
-    showVideoCanvas,
-    setShowVideoCanvas
   } = useMusic();
 
   const [isHoveringProgress, setIsHoveringProgress] = useState(false);
@@ -202,19 +199,6 @@ export default function Player({ onToggleQueue }) {
 
       {/* 3. Controles Secundarios y Volumen (Derecha) */}
       <div className="flex items-center justify-end gap-2.5 md:gap-3 w-1/4 min-w-[140px] md:min-w-[200px]">
-        {/* Botón de Video Canvas Oficial (Solo para canciones online) */}
-        {currentTrack.isOnline && (
-          <button
-            onClick={() => setShowVideoCanvas(!showVideoCanvas)}
-            title={showVideoCanvas ? 'Ocultar video canvas' : 'Ver video canvas oficial'}
-            className={`p-1.5 transition-colors hidden sm:block ${
-              showVideoCanvas ? 'text-[#1ed760]' : 'text-neutral-400 hover:text-white'
-            }`}
-          >
-            <Tv className="w-4 h-4 md:w-5 md:h-5" />
-          </button>
-        )}
-
         {/* Botón de Cola de Reproducción */}
         <button
           onClick={onToggleQueue}

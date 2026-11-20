@@ -45,16 +45,11 @@ export const MusicProvider = ({ children }) => {
   const [isShuffle, setIsShuffle] = useState(false);
   const [repeatMode, setRepeatMode] = useState('off'); // 'off' | 'all' | 'one'
 
-  // Video Canvas oficial para canciones en línea (estilo Spotify Canvas)
-  const [showVideoCanvas, setShowVideoCanvas] = useState(false);
-  const [activeVideoId, setActiveVideoId] = useState(null);
-  const ytPlayerRef = useRef(null);
-
   // Biblioteca personal y likes
   const [likedSongIds, setLikedSongIds] = useState(['s-1', 's-3', 's-7']);
   const [userPlaylists, setUserPlaylists] = useState(MOCK_PLAYLISTS);
 
-  // Referencia de audio nativo del navegador (para archivos locales y demos)
+  // Motor Unificado de Audio Nativo HTML5 (Sin Iframes, Sin Restricciones de Embed)
   const audioRef = useRef(new Audio());
   const synthActiveRef = useRef(false);
   const virtualTimerRef = useRef(null);
@@ -69,39 +64,33 @@ export const MusicProvider = ({ children }) => {
     });
   };
 
-  // 1. Inicializar listeners del elemento Audio nativo (usado para archivos locales y demos)
+  // 1. Inicializar listeners del elemento Audio nativo unificado
   useEffect(() => {
     const audio = audioRef.current;
     audio.preload = 'auto';
 
     const handleTimeUpdate = () => {
-      if (!currentTrack?.isOnline && !synthActiveRef.current) {
+      if (!synthActiveRef.current) {
         setCurrentTime(audio.currentTime);
       }
     };
 
     const handleLoadedMetadata = () => {
-      if (!currentTrack?.isOnline && audio.duration && !isNaN(audio.duration) && audio.duration !== Infinity) {
+      if (audio.duration && !isNaN(audio.duration) && audio.duration !== Infinity && audio.duration > 0) {
         setDuration(Math.round(audio.duration));
       }
     };
 
     const handleCanPlay = () => {
-      if (!currentTrack?.isOnline) {
-        setIsLoadingAudio(false);
-      }
+      setIsLoadingAudio(false);
     };
 
     const handleEnded = () => {
-      if (!currentTrack?.isOnline) {
-        handleNextTrack();
-      }
+      handleNextTrack();
     };
 
     const handleError = (e) => {
-      if (currentTrack?.isOnline) return; // Las canciones online son gestionadas por YouTubeAudioEngine
-
-      console.warn('Error en elemento de audio local/demo:', e);
+      console.warn('Error en elemento de audio nativo:', e);
       setIsLoadingAudio(false);
 
       if (currentTrack?.isLocal) {
@@ -114,7 +103,14 @@ export const MusicProvider = ({ children }) => {
         return;
       }
 
-      // Canción demo integrada que falló: sintetizador de respaldo
+      if (currentTrack?.isOnline) {
+        setIsPlaying(false);
+        synthFallback.stop();
+        showToast(`No se pudo transmitir "${currentTrack.title}". Intenta con otra canción.`, 'warning');
+        return;
+      }
+
+      // Canción demo integrada que falló por red/CORS: sintetizador de respaldo
       audio.pause();
       if (isPlaying) {
         synthActiveRef.current = true;
@@ -141,7 +137,7 @@ export const MusicProvider = ({ children }) => {
     };
   }, [currentTrack, isPlaying, volume]);
 
-  // 2. Sincronizar canción actual (carga la pista según sea local o global en línea)
+  // 2. Cargar pista de audio directa (Local o Streaming sin restricciones)
   useEffect(() => {
     if (!currentTrack) return;
 
@@ -160,62 +156,49 @@ export const MusicProvider = ({ children }) => {
       audio.volume = isMuted ? 0 : volume;
 
       if (currentTrack.isOnline) {
-        // Detener audio nativo
-        audio.pause();
         setIsLoadingAudio(true);
 
         let videoId = currentTrack.youtubeId;
         if (!videoId) {
           const source = await getFullSongSource(currentTrack.artist, currentTrack.title);
-          if (currentToken !== loadTokenRef.current) return; // Canción cambiada mientras cargaba
+          if (currentToken !== loadTokenRef.current) return;
 
           if (source && source.videoId) {
             videoId = source.videoId;
             currentTrack.youtubeId = videoId;
             currentTrack.ytMatches = source.matches || [videoId];
-            currentTrack.matchIndex = 0;
           }
         }
 
         if (videoId) {
-          setActiveVideoId(videoId);
-          // Si el reproductor de YouTube ya está montado, cargar el video directamente
-          if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === 'function') {
-            try {
-              ytPlayerRef.current.loadVideoById(videoId);
-              if (isPlaying) {
-                ytPlayerRef.current.playVideo();
-              }
-            } catch (e) {}
-          }
+          const isLocal = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+          const streamBase = isLocal ? '' : (import.meta.env.VITE_STREAM_API_URL || 'https://nova-music-backend-mhxu.onrender.com');
+          const streamUrl = `${streamBase}/api/stream-audio?id=${videoId}`;
+          currentTrack.streamUrl = streamUrl;
+          audio.src = streamUrl;
         } else {
           setIsLoadingAudio(false);
           setIsPlaying(false);
-          showToast(`No se encontró fuente para "${currentTrack.title}".`, 'warning');
+          showToast(`No se encontró fuente de audio para "${currentTrack.title}".`, 'warning');
+          return;
         }
       } else {
-        // Archivo local del usuario o demo integrada
-        if (ytPlayerRef.current && typeof ytPlayerRef.current.stopVideo === 'function') {
-          try {
-            ytPlayerRef.current.stopVideo();
-          } catch (e) {}
-        }
-        setActiveVideoId(null);
+        // Archivo local o demo
         setIsLoadingAudio(false);
-
         audio.src = currentTrack.audioUrl;
-        if (isPlaying) {
-          const playPromise = audio.play();
-          if (playPromise !== undefined) {
-            playPromise.catch((err) => {
-              console.warn('Playback error / autoplay:', err);
-              if (!currentTrack?.isLocal && !currentTrack?.isOnline) {
-                synthActiveRef.current = true;
-                synthFallback.setVolume(volume);
-                synthFallback.start();
-              }
-            });
-          }
+      }
+
+      if (isPlaying) {
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn('Playback error / autoplay:', err);
+            if (!currentTrack?.isLocal && !currentTrack?.isOnline) {
+              synthActiveRef.current = true;
+              synthFallback.setVolume(volume);
+              synthFallback.start();
+            }
+          });
         }
       }
     };
@@ -223,22 +206,8 @@ export const MusicProvider = ({ children }) => {
     setupTrack();
   }, [currentTrack]);
 
-  // 3. Manejar Play / Pause sincronizado entre ambos motores
+  // 3. Manejar Play / Pause sincronizado
   useEffect(() => {
-    if (currentTrack?.isOnline) {
-      if (ytPlayerRef.current && typeof ytPlayerRef.current.getPlayerState === 'function') {
-        try {
-          if (isPlaying) {
-            ytPlayerRef.current.playVideo();
-          } else {
-            ytPlayerRef.current.pauseVideo();
-          }
-        } catch (e) {}
-      }
-      return;
-    }
-
-    // Para canciones locales o demos nativas
     const audio = audioRef.current;
     if (isPlaying) {
       if (synthActiveRef.current && !currentTrack?.isLocal && !currentTrack?.isOnline) {
@@ -277,40 +246,15 @@ export const MusicProvider = ({ children }) => {
     }
   }, [isPlaying]);
 
-  // 4. Manejar Volumen y Mute sincronizado en ambos motores
+  // 4. Manejar Volumen y Mute sincronizado
   useEffect(() => {
     const currentVol = isMuted ? 0 : volume;
     audioRef.current.volume = currentVol;
     synthFallback.setVolume(currentVol);
-
-    if (ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
-      try {
-        ytPlayerRef.current.setVolume(currentVol * 100);
-        if (isMuted) {
-          ytPlayerRef.current.mute();
-        } else {
-          ytPlayerRef.current.unMute();
-        }
-      } catch (e) {}
-    }
   }, [volume, isMuted]);
 
   // Controladores de reproducción
   const togglePlay = () => {
-    if (currentTrack?.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.getPlayerState === 'function') {
-      try {
-        const state = ytPlayerRef.current.getPlayerState();
-        if (state === 1) { // 1 = playing
-          ytPlayerRef.current.pauseVideo();
-          setIsPlaying(false);
-          return;
-        } else {
-          ytPlayerRef.current.playVideo();
-          setIsPlaying(true);
-          return;
-        }
-      } catch (e) {}
-    }
     setIsPlaying(!isPlaying);
   };
 
@@ -337,11 +281,7 @@ export const MusicProvider = ({ children }) => {
 
     if (currentTrack?.id === track.id) {
       setIsPlaying(true);
-      if (track.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
-        try { ytPlayerRef.current.playVideo(); } catch (e) {}
-      } else {
-        audioRef.current.play().catch(() => {});
-      }
+      audioRef.current.play().catch(() => {});
     } else {
       setCurrentTrack(track);
       setIsPlaying(true);
@@ -350,12 +290,9 @@ export const MusicProvider = ({ children }) => {
 
   const handleNextTrack = () => {
     if (repeatMode === 'one') {
-      seekTo(0);
-      if (currentTrack?.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
-        try { ytPlayerRef.current.playVideo(); } catch (e) {}
-      } else {
-        audioRef.current.play().catch(() => {});
-      }
+      audioRef.current.currentTime = 0;
+      setCurrentTime(0);
+      audioRef.current.play().catch(() => {});
       return;
     }
 
@@ -380,7 +317,8 @@ export const MusicProvider = ({ children }) => {
 
   const handlePrevTrack = () => {
     if (currentTime > 4) {
-      seekTo(0);
+      audioRef.current.currentTime = 0;
+      setCurrentTime(0);
       return;
     }
 
@@ -389,18 +327,13 @@ export const MusicProvider = ({ children }) => {
       setCurrentIndex(prevIdx);
       setCurrentTrack(queue[prevIdx]);
     } else {
-      seekTo(0);
+      audioRef.current.currentTime = 0;
+      setCurrentTime(0);
     }
   };
 
   const seekTo = (seconds) => {
     setCurrentTime(seconds);
-    if (currentTrack?.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
-      try {
-        ytPlayerRef.current.seekTo(seconds, true);
-        return;
-      } catch (e) {}
-    }
     if (!synthActiveRef.current) {
       try {
         audioRef.current.currentTime = seconds;
@@ -631,11 +564,6 @@ export const MusicProvider = ({ children }) => {
         formatTime,
         isLoadingAudio,
         setIsLoadingAudio,
-        ytPlayerRef,
-        activeVideoId,
-        setActiveVideoId,
-        showVideoCanvas,
-        setShowVideoCanvas,
         MOCK_SONGS,
         MOCK_ALBUMS,
         MOCK_PLAYLISTS,

@@ -9,7 +9,6 @@ import SearchView from './components/SearchView';
 import LibraryView from './components/LibraryView';
 import DetailView from './components/DetailView';
 import QueueModal from './components/QueueModal';
-import YouTubeAudioEngine from './components/YouTubeAudioEngine';
 
 function MainLayout() {
   const { currentView, toast } = useMusic();
@@ -54,9 +53,6 @@ function MainLayout() {
 
       {/* Navegación móvil inferior (aparece en pantallas pequeñas) */}
       <MobileNav />
-
-      {/* Motor de reproducción para canciones online completas */}
-      <YouTubeAudioEngine />
 
       {/* Reproductor fijo en la parte inferior */}
       <Player onToggleQueue={() => setIsQueueOpen(!isQueueOpen)} />
