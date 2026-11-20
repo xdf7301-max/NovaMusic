@@ -7,11 +7,15 @@ export default function YouTubeAudioEngine() {
     currentTrack,
     isPlaying,
     setIsPlaying,
+    setIsLoadingAudio,
     volume,
     isMuted,
+    currentTime,
     setCurrentTime,
+    duration,
     setDuration,
     handleNextTrack,
+    repeatMode,
     ytPlayerRef,
     activeVideoId,
     showVideoCanvas,
@@ -22,14 +26,19 @@ export default function YouTubeAudioEngine() {
   const [isYTReady, setIsYTReady] = useState(false);
   const timeIntervalRef = useRef(null);
   const pendingVideoIdRef = useRef(null);
+  const lastStateRef = useRef(null);
 
-  // 1. Cargar script de la API de YouTube IFrame solo una vez
+  // 1. Cargar script de la API de YouTube IFrame de forma segura
   useEffect(() => {
     if (!window.YT) {
       const tag = document.createElement('script');
       tag.src = 'https://www.youtube.com/iframe_api';
       const firstScriptTag = document.getElementsByTagName('script')[0];
-      firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+      if (firstScriptTag && firstScriptTag.parentNode) {
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+      } else {
+        document.head.appendChild(tag);
+      }
 
       window.onYouTubeIframeAPIReady = () => {
         setIsYTReady(true);
@@ -60,7 +69,6 @@ export default function YouTubeAudioEngine() {
     }
 
     if (!ytPlayerRef.current) {
-      // Inicializar el reproductor con el videoId específico
       try {
         ytPlayerRef.current = new window.YT.Player('nova-yt-frame', {
           height: '100%',
@@ -74,34 +82,45 @@ export default function YouTubeAudioEngine() {
             modestbranding: 1,
             rel: 0,
             playsinline: 1,
+            origin: window.location.origin
           },
           events: {
             onReady: (event) => {
               try {
                 event.target.setVolume(volume * 100);
                 if (isMuted) event.target.mute();
-                if (isPlaying) event.target.playVideo();
+                if (isPlaying) {
+                  event.target.playVideo();
+                }
               } catch (e) {}
             },
             onStateChange: (event) => {
-              // 1: Reproduciendo, 2: Pausado, 0: Terminado naturalmente
+              lastStateRef.current = event.data;
+              // 1: Playing
               if (event.data === 1) {
                 setIsPlaying(true);
+                setIsLoadingAudio(false);
                 const realDuration = event.target.getDuration();
                 if (realDuration && !isNaN(realDuration) && realDuration > 0) {
                   setDuration(Math.round(realDuration));
                 }
               } else if (event.data === 2) {
+                // 2: Paused
                 setIsPlaying(false);
               } else if (event.data === 0) {
-                // Canción terminada naturalmente de principio a fin -> Pasar a siguiente
-                handleNextTrack();
+                // 0: Ended naturalmente (terminó toda la canción)
+                if (repeatMode === 'one') {
+                  event.target.seekTo(0);
+                  event.target.playVideo();
+                } else {
+                  handleNextTrack();
+                }
               }
             },
             onError: (event) => {
               console.warn('Error en video ID (' + event.data + '). Buscando fuente alternativa...');
 
-              // Si tiene fuentes alternativas, probar la siguiente sin saltar la canción
+              // Si tiene fuentes alternativas, probar la siguiente sin interrumpir al usuario
               if (currentTrack?.ytMatches && currentTrack.ytMatches.length > 0) {
                 const curIdx = currentTrack.matchIndex || 0;
                 const nextIdx = curIdx + 1;
@@ -109,7 +128,7 @@ export default function YouTubeAudioEngine() {
                 if (nextIdx < currentTrack.ytMatches.length) {
                   currentTrack.matchIndex = nextIdx;
                   const nextId = currentTrack.ytMatches[nextIdx];
-                  console.log(`Cargando fuente alternativa ${nextIdx + 1}:`, nextId);
+                  console.log(`Cargando fuente alternativa #${nextIdx + 1}:`, nextId);
 
                   try {
                     event.target.loadVideoById(nextId);
@@ -119,7 +138,8 @@ export default function YouTubeAudioEngine() {
                 }
               }
 
-              // Si todas las alternativas fallaron
+              // Si fallaron todas las alternativas
+              setIsLoadingAudio(false);
               setIsPlaying(false);
               showToast('Esta versión tiene restricciones. Selecciona otra canción.', 'warning');
             },
@@ -143,18 +163,18 @@ export default function YouTubeAudioEngine() {
     }
   }, [activeVideoId, isYTReady]);
 
-  // Si el script de YT se cargó tarde pero había un video pendiente
+  // Si el script de YT se cargó después de establecer el videoId
   useEffect(() => {
     if (isYTReady && pendingVideoIdRef.current) {
       const vid = pendingVideoIdRef.current;
       pendingVideoIdRef.current = null;
-      if (vid === activeVideoId && !ytPlayerRef.current) {
-        // Triggered by previous useEffect
+      if (vid && !ytPlayerRef.current) {
+        // Se ejecuta por el hook anterior
       }
     }
-  }, [isYTReady, activeVideoId]);
+  }, [isYTReady]);
 
-  // 3. Sincronización del tiempo transcurrido
+  // 3. Sincronización del tiempo transcurrido (barra de progreso)
   useEffect(() => {
     if (timeIntervalRef.current) clearInterval(timeIntervalRef.current);
 
@@ -178,20 +198,24 @@ export default function YouTubeAudioEngine() {
 
   return (
     <>
+      {/* Contenedor del reproductor de YouTube:
+          - Modo normal: tamaño estándar (320x180) pero posicionado fuera de pantalla para reproducción invisible de fondo.
+          - Modo Canvas: card flotante con diseño elegante estilo Spotify en la esquina inferior derecha.
+      */}
       <div
         className={`transition-all duration-300 z-50 ${
           showVideoCanvas && currentTrack?.isOnline
-            ? 'fixed bottom-28 right-6 w-80 sm:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10'
-            : 'fixed -bottom-[9999px] -right-[9999px] w-2 h-2 pointer-events-none opacity-0'
+            ? 'fixed bottom-24 right-6 w-80 sm:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-[#1ed760]/30'
+            : 'fixed -bottom-[9999px] -right-[9999px] w-[320px] h-[180px] pointer-events-none opacity-0'
         }`}
       >
         {showVideoCanvas && currentTrack?.isOnline && (
-          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 bg-black/70 backdrop-blur-md rounded-full px-2 py-1">
-            <span className="text-[10px] text-white font-medium pl-1">Video Canvas</span>
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 bg-black/80 backdrop-blur-md rounded-full px-2.5 py-1 border border-white/10">
+            <span className="text-[10px] text-[#1ed760] font-bold pl-1">Canvas Oficial</span>
             <button
               onClick={() => setShowVideoCanvas(false)}
               className="p-1 text-neutral-400 hover:text-white rounded-full transition-colors"
-              title="Cerrar video y mantener solo audio"
+              title="Cerrar video canvas y mantener solo audio"
             >
               <X className="w-3.5 h-3.5" />
             </button>

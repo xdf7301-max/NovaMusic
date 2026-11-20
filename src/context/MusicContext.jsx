@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { MOCK_SONGS, MOCK_ALBUMS, MOCK_PLAYLISTS, MOCK_GENRES, MOCK_ARTISTS } from '../data/mockData';
 import { synthFallback } from '../utils/audioSynth';
-import { getFullSongSource, getStreamBase, getInvidiousStreamUrl } from '../utils/musicApi';
+import { getFullSongSource } from '../utils/musicApi';
 
 const MusicContext = createContext();
 
@@ -45,11 +45,16 @@ export const MusicProvider = ({ children }) => {
   const [isShuffle, setIsShuffle] = useState(false);
   const [repeatMode, setRepeatMode] = useState('off'); // 'off' | 'all' | 'one'
 
+  // Video Canvas oficial para canciones en línea (estilo Spotify Canvas)
+  const [showVideoCanvas, setShowVideoCanvas] = useState(false);
+  const [activeVideoId, setActiveVideoId] = useState(null);
+  const ytPlayerRef = useRef(null);
+
   // Biblioteca personal y likes
   const [likedSongIds, setLikedSongIds] = useState(['s-1', 's-3', 's-7']);
   const [userPlaylists, setUserPlaylists] = useState(MOCK_PLAYLISTS);
 
-  // Referencia de audio nativo del navegador (Motor Unificado)
+  // Referencia de audio nativo del navegador (para archivos locales y demos)
   const audioRef = useRef(new Audio());
   const synthActiveRef = useRef(false);
   const virtualTimerRef = useRef(null);
@@ -64,34 +69,39 @@ export const MusicProvider = ({ children }) => {
     });
   };
 
-  // 1. Inicializar listeners del elemento Audio nativo unificado
+  // 1. Inicializar listeners del elemento Audio nativo (usado para archivos locales y demos)
   useEffect(() => {
     const audio = audioRef.current;
     audio.preload = 'auto';
 
     const handleTimeUpdate = () => {
-      if (!synthActiveRef.current) {
+      if (!currentTrack?.isOnline && !synthActiveRef.current) {
         setCurrentTime(audio.currentTime);
       }
     };
 
     const handleLoadedMetadata = () => {
-      if (audio.duration && !isNaN(audio.duration) && audio.duration !== Infinity) {
+      if (!currentTrack?.isOnline && audio.duration && !isNaN(audio.duration) && audio.duration !== Infinity) {
         setDuration(Math.round(audio.duration));
       }
     };
 
-    // Cuando el audio puede empezar a reproducirse, quitar el spinner
     const handleCanPlay = () => {
-      setIsLoadingAudio(false);
+      if (!currentTrack?.isOnline) {
+        setIsLoadingAudio(false);
+      }
     };
 
     const handleEnded = () => {
-      handleNextTrack();
+      if (!currentTrack?.isOnline) {
+        handleNextTrack();
+      }
     };
 
     const handleError = (e) => {
-      console.warn('Error en elemento de audio nativo:', e);
+      if (currentTrack?.isOnline) return; // Las canciones online son gestionadas por YouTubeAudioEngine
+
+      console.warn('Error en elemento de audio local/demo:', e);
       setIsLoadingAudio(false);
 
       if (currentTrack?.isLocal) {
@@ -104,21 +114,7 @@ export const MusicProvider = ({ children }) => {
         return;
       }
 
-      if (currentTrack?.isOnline) {
-        // Limpiar la URL cacheada para forzar nuevo intento
-        if (currentTrack.streamUrl) {
-          delete currentTrack.streamUrl;
-        }
-        if (currentTrack.youtubeId) {
-          delete currentTrack.youtubeId;
-        }
-        setIsPlaying(false);
-        synthFallback.stop();
-        showToast(`No se pudo transmitir "${currentTrack.title}". Intenta con otra canción.`, 'warning');
-        return;
-      }
-
-      // Si es una canción demo que falló por CORS/red — usar sintetizador de respaldo
+      // Canción demo integrada que falló: sintetizador de respaldo
       audio.pause();
       if (isPlaying) {
         synthActiveRef.current = true;
@@ -145,7 +141,7 @@ export const MusicProvider = ({ children }) => {
     };
   }, [currentTrack, isPlaying, volume]);
 
-  // 2. Sincronizar canción actual (carga la pista de audio directa)
+  // 2. Sincronizar canción actual (carga la pista según sea local o global en línea)
   useEffect(() => {
     if (!currentTrack) return;
 
@@ -159,107 +155,90 @@ export const MusicProvider = ({ children }) => {
 
     const currentToken = ++loadTokenRef.current;
 
-    const setupAudio = async () => {
+    const setupTrack = async () => {
       const audio = audioRef.current;
       audio.volume = isMuted ? 0 : volume;
 
       if (currentTrack.isOnline) {
+        // Detener audio nativo
+        audio.pause();
         setIsLoadingAudio(true);
 
-        // Si ya tiene la URL de streaming cacheada, usarla directamente
-        if (currentTrack.streamUrl) {
-          audio.src = currentTrack.streamUrl;
-        } else {
-          // Buscar el videoId de YouTube para streaming completo
-          let videoId = currentTrack.youtubeId;
-          if (!videoId) {
-            const source = await getFullSongSource(currentTrack.artist, currentTrack.title);
-            if (currentToken !== loadTokenRef.current) return;
-            if (source && source.videoId) {
-              videoId = source.videoId;
-              currentTrack.youtubeId = videoId;
-            }
-          }
+        let videoId = currentTrack.youtubeId;
+        if (!videoId) {
+          const source = await getFullSongSource(currentTrack.artist, currentTrack.title);
+          if (currentToken !== loadTokenRef.current) return; // Canción cambiada mientras cargaba
 
-          if (videoId) {
-            // 1. Intentar el servidor de streaming (Vite dev proxy o Render).
-            // El probe usa un timeout generoso (15s): en Render la primera resolución
-            // de URL puede tardar ~50s (ytdl-core + visionos), y con 4s el frontend
-            // abandonaba el probe y caía al preview de 30s de iTunes.
-            const streamBase = getStreamBase();
-            const isLocal = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
-            const streamUrl = isLocal
-              ? `/api/stream-audio?id=${videoId}`
-              : `${streamBase}/api/stream-audio?id=${videoId}`;
-
-            // Probar la URL del backend; si falla, usar Invidious como respaldo
-            let backendOk = false;
-            try {
-              const probe = await fetch(streamUrl, { method: 'HEAD', signal: AbortSignal.timeout(15000) });
-              backendOk = probe.ok || probe.status === 206;
-            } catch {
-              backendOk = false;
-            }
-
-            if (backendOk) {
-              currentTrack.streamUrl = streamUrl;
-              audio.src = streamUrl;
-            } else {
-              // 2. Respaldo: Invidious (GitHub Pages / entornos sin backend)
-              const invUrl = await getInvidiousStreamUrl(videoId);
-              if (invUrl) {
-                currentTrack.streamUrl = invUrl;
-                audio.src = invUrl;
-              } else if (currentTrack.previewUrl) {
-                audio.src = currentTrack.previewUrl;
-                showToast(`Preview de 30s: "${currentTrack.title}". Instala el proyecto en local para canción completa.`, 'info');
-                setIsLoadingAudio(false);
-              } else {
-                showToast(`No se encontró fuente para "${currentTrack.title}".`, 'warning');
-                setIsLoadingAudio(false);
-                setIsPlaying(false);
-                return;
-              }
-            }
-          } else if (currentTrack.previewUrl) {
-            // Último recurso: preview de 30s de iTunes
-            audio.src = currentTrack.previewUrl;
-            showToast(`Preview de 30s: "${currentTrack.title}". Instala el proyecto en local para canción completa.`, 'info');
-            setIsLoadingAudio(false);
-          } else {
-            showToast(`No se encontró fuente para "${currentTrack.title}".`, 'warning');
-            setIsLoadingAudio(false);
-            setIsPlaying(false);
-            return;
+          if (source && source.videoId) {
+            videoId = source.videoId;
+            currentTrack.youtubeId = videoId;
+            currentTrack.ytMatches = source.matches || [videoId];
+            currentTrack.matchIndex = 0;
           }
         }
 
-        // Loading se quita con el evento 'canplay'
+        if (videoId) {
+          setActiveVideoId(videoId);
+          // Si el reproductor de YouTube ya está montado, cargar el video directamente
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === 'function') {
+            try {
+              ytPlayerRef.current.loadVideoById(videoId);
+              if (isPlaying) {
+                ytPlayerRef.current.playVideo();
+              }
+            } catch (e) {}
+          }
+        } else {
+          setIsLoadingAudio(false);
+          setIsPlaying(false);
+          showToast(`No se encontró fuente para "${currentTrack.title}".`, 'warning');
+        }
       } else {
         // Archivo local del usuario o demo integrada
-        audio.src = currentTrack.audioUrl;
-      }
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.stopVideo === 'function') {
+          try {
+            ytPlayerRef.current.stopVideo();
+          } catch (e) {}
+        }
+        setActiveVideoId(null);
+        setIsLoadingAudio(false);
 
-      if (isPlaying) {
-        const playPromise = audio.play();
-        if (playPromise !== undefined) {
-          playPromise.catch((err) => {
-            console.warn('Playback error / autoplay:', err);
-            if (!currentTrack?.isLocal && !currentTrack?.isOnline) {
-              synthActiveRef.current = true;
-              synthFallback.setVolume(volume);
-              synthFallback.start();
-            }
-          });
+        audio.src = currentTrack.audioUrl;
+        if (isPlaying) {
+          const playPromise = audio.play();
+          if (playPromise !== undefined) {
+            playPromise.catch((err) => {
+              console.warn('Playback error / autoplay:', err);
+              if (!currentTrack?.isLocal && !currentTrack?.isOnline) {
+                synthActiveRef.current = true;
+                synthFallback.setVolume(volume);
+                synthFallback.start();
+              }
+            });
+          }
         }
       }
     };
 
-    setupAudio();
+    setupTrack();
   }, [currentTrack]);
 
-  // 3. Manejar Play / Pause sincronizado
+  // 3. Manejar Play / Pause sincronizado entre ambos motores
   useEffect(() => {
+    if (currentTrack?.isOnline) {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.getPlayerState === 'function') {
+        try {
+          if (isPlaying) {
+            ytPlayerRef.current.playVideo();
+          } else {
+            ytPlayerRef.current.pauseVideo();
+          }
+        } catch (e) {}
+      }
+      return;
+    }
+
+    // Para canciones locales o demos nativas
     const audio = audioRef.current;
     if (isPlaying) {
       if (synthActiveRef.current && !currentTrack?.isLocal && !currentTrack?.isOnline) {
@@ -298,15 +277,40 @@ export const MusicProvider = ({ children }) => {
     }
   }, [isPlaying]);
 
-  // 4. Manejar Volumen y Mute sincronizado
+  // 4. Manejar Volumen y Mute sincronizado en ambos motores
   useEffect(() => {
     const currentVol = isMuted ? 0 : volume;
     audioRef.current.volume = currentVol;
     synthFallback.setVolume(currentVol);
+
+    if (ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
+      try {
+        ytPlayerRef.current.setVolume(currentVol * 100);
+        if (isMuted) {
+          ytPlayerRef.current.mute();
+        } else {
+          ytPlayerRef.current.unMute();
+        }
+      } catch (e) {}
+    }
   }, [volume, isMuted]);
 
   // Controladores de reproducción
   const togglePlay = () => {
+    if (currentTrack?.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.getPlayerState === 'function') {
+      try {
+        const state = ytPlayerRef.current.getPlayerState();
+        if (state === 1) { // 1 = playing
+          ytPlayerRef.current.pauseVideo();
+          setIsPlaying(false);
+          return;
+        } else {
+          ytPlayerRef.current.playVideo();
+          setIsPlaying(true);
+          return;
+        }
+      } catch (e) {}
+    }
     setIsPlaying(!isPlaying);
   };
 
@@ -333,7 +337,11 @@ export const MusicProvider = ({ children }) => {
 
     if (currentTrack?.id === track.id) {
       setIsPlaying(true);
-      audioRef.current.play().catch(() => {});
+      if (track.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
+        try { ytPlayerRef.current.playVideo(); } catch (e) {}
+      } else {
+        audioRef.current.play().catch(() => {});
+      }
     } else {
       setCurrentTrack(track);
       setIsPlaying(true);
@@ -342,9 +350,12 @@ export const MusicProvider = ({ children }) => {
 
   const handleNextTrack = () => {
     if (repeatMode === 'one') {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
-      audioRef.current.play().catch(() => {});
+      seekTo(0);
+      if (currentTrack?.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
+        try { ytPlayerRef.current.playVideo(); } catch (e) {}
+      } else {
+        audioRef.current.play().catch(() => {});
+      }
       return;
     }
 
@@ -369,8 +380,7 @@ export const MusicProvider = ({ children }) => {
 
   const handlePrevTrack = () => {
     if (currentTime > 4) {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
+      seekTo(0);
       return;
     }
 
@@ -379,13 +389,18 @@ export const MusicProvider = ({ children }) => {
       setCurrentIndex(prevIdx);
       setCurrentTrack(queue[prevIdx]);
     } else {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
+      seekTo(0);
     }
   };
 
   const seekTo = (seconds) => {
     setCurrentTime(seconds);
+    if (currentTrack?.isOnline && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+      try {
+        ytPlayerRef.current.seekTo(seconds, true);
+        return;
+      } catch (e) {}
+    }
     if (!synthActiveRef.current) {
       try {
         audioRef.current.currentTime = seconds;
@@ -615,6 +630,12 @@ export const MusicProvider = ({ children }) => {
         seekTo,
         formatTime,
         isLoadingAudio,
+        setIsLoadingAudio,
+        ytPlayerRef,
+        activeVideoId,
+        setActiveVideoId,
+        showVideoCanvas,
+        setShowVideoCanvas,
         MOCK_SONGS,
         MOCK_ALBUMS,
         MOCK_PLAYLISTS,

@@ -1,7 +1,6 @@
-// Servicio de Búsqueda y Transmisión de Música Completa
-// Local: Vite dev server | GitHub Pages: Invidious (espejo YT con CORS)
+// Servicio de Búsqueda y Catálogo de Música Completa (NOVA MUSIC)
+// Combina iTunes Search API para metadata en HD y resolución de fuentes oficiales completas
 
-// ─── URL base para búsqueda (yt-search) ──────────────────────────────────────
 function getSearchBase() {
   if (typeof window !== 'undefined') {
     const isLocal = window.location.hostname === '127.0.0.1' ||
@@ -11,61 +10,14 @@ function getSearchBase() {
   return import.meta.env.VITE_STREAM_API_URL || 'https://nova-music-backend-mhxu.onrender.com';
 }
 
-// ─── Streaming: Invidious para GitHub Pages ───────────────────────────────────
-// Invidious es un espejo de YouTube de código abierto con CORS habilitado.
-// Con ?local=true, las URLs de audio pasan por el proxy de Invidious (sin restricciones).
-const INVIDIOUS_INSTANCES = [
-  'https://invidious.projectsegfau.lt',
-  'https://inv.riverside.rocks',
-  'https://invidious.nerdvpn.de',
-  'https://vid.puffyan.us',
-  'https://invidious.snopyta.org',
-  'https://invidious.kavin.rocks',
-];
-
-export async function getInvidiousStreamUrl(videoId) {
-  for (const instance of INVIDIOUS_INSTANCES) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-
-      const res = await fetch(
-        `${instance}/api/v1/videos/${videoId}?local=true`,
-        { signal: controller.signal, headers: { Accept: 'application/json' } }
-      );
-      clearTimeout(timer);
-      if (!res.ok) continue;
-
-      const data = await res.json();
-      const audioFormats = (data.adaptiveFormats || []).filter(
-        (f) => f.type?.startsWith('audio/') && f.url
-      );
-      if (!audioFormats.length) continue;
-
-      // Elegir la mejor calidad de audio
-      const best = audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-      let url = best.url;
-      // Si la URL es relativa, prepend del dominio de la instancia
-      if (url.startsWith('/')) url = instance + url;
-      return url;
-    } catch (e) {
-      if (e.name !== 'AbortError') {
-        console.warn(`[Invidious] ${instance} falló:`, e.message);
-      }
-    }
-  }
-  return null;
-}
-
-// Alias used by MusicContext.jsx — kept for backwards compatibility
-export const getStreamBase = getSearchBase;
+export { getSearchBase };
 
 export async function searchGlobalMusic(query, limit = 150) {
   if (!query || !query.trim()) return [];
 
   try {
     const cleanQuery = encodeURIComponent(query.trim());
-    // 1. Búsqueda amplia por término
+    // 1. Búsqueda amplia por término en iTunes
     const searchUrl = `https://itunes.apple.com/search?term=${cleanQuery}&media=music&entity=song&limit=${limit}`;
 
     const res = await fetch(searchUrl);
@@ -81,7 +33,6 @@ export async function searchGlobalMusic(query, limit = 150) {
       const topArtistId = rawResults[0].artistId;
       const topArtistName = rawResults[0].artistName?.toLowerCase();
 
-      // Si la búsqueda incluye el nombre del artista, ampliar con su discografía completa
       if (topArtistName && (cleanQuery.includes(encodeURIComponent(topArtistName)) || topArtistName.includes(query.toLowerCase()))) {
         try {
           const lookupUrl = `https://itunes.apple.com/lookup?id=${topArtistId}&entity=song&limit=200`;
@@ -90,7 +41,6 @@ export async function searchGlobalMusic(query, limit = 150) {
             const lookupData = await lookupRes.json();
             const artistSongs = (lookupData.results || []).filter((item) => item.wrapperType === 'track' && item.trackName);
             if (artistSongs.length > 0) {
-              // Combinar resultados de búsqueda general con la discografía completa
               rawResults = [...artistSongs, ...rawResults];
             }
           }
@@ -138,9 +88,6 @@ export async function searchGlobalMusic(query, limit = 150) {
         releaseDate: item.releaseDate
           ? new Date(item.releaseDate).getFullYear().toString()
           : '2026',
-        // previewUrl: fragmento de 30s de iTunes, funciona en GitHub Pages (CORS abierto)
-        // Es un respaldo cuando el streaming completo (/api/stream-audio) no está disponible
-        previewUrl: item.previewUrl || null,
         isOnline: true,
         plays: 'Global'
       });
@@ -153,12 +100,12 @@ export async function searchGlobalMusic(query, limit = 150) {
   }
 }
 
-// Resuelve el videoId de YouTube para streaming completo
+// Resuelve múltiples IDs de YouTube (priorizando audio/letras oficiales) para reproducción 100% completa
 export async function getFullSongSource(artist, title) {
   const query = `${artist} ${title}`;
   const base = getSearchBase();
 
-  // 1. Usar backend de streaming (Vite dev o Render.com en producción)
+  // 1. Probar backend dedicado (Vite en dev, Render en producción)
   try {
     const res = await fetch(`${base}/api/yt-search?q=${encodeURIComponent(query)}`);
     if (res.ok) {
@@ -171,10 +118,10 @@ export async function getFullSongSource(artist, title) {
       }
     }
   } catch (e) {
-    console.warn('Backend no disponible, probando respaldo CORS...', e);
+    console.warn('Backend primario no respondió, usando respaldo...', e);
   }
 
-  // 2. Respaldo mediante proxy público CORS (cuando no hay backend)
+  // 2. Respaldo mediante proxy público CORS (AllOrigins)
   try {
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' audio')}`;
     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(searchUrl)}`;
@@ -189,7 +136,25 @@ export async function getFullSongSource(artist, title) {
       }
     }
   } catch (err) {
-    console.error('Error en respaldo de búsqueda:', err);
+    console.warn('Respaldo 1 de búsqueda falló:', err);
+  }
+
+  // 3. Respaldo secundario mediante CodeTabs CORS
+  try {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' audio')}`;
+    const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(searchUrl)}`;
+    const res = await fetch(proxyUrl);
+    if (res.ok) {
+      const text = await res.text();
+      const regex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+      const matches = [...text.matchAll(regex)].map((m) => m[1]);
+      const unique = [...new Set(matches)];
+      if (unique.length > 0) {
+        return { videoId: unique[0], matches: unique.slice(0, 10) };
+      }
+    }
+  } catch (err) {
+    console.warn('Respaldo 2 de búsqueda falló:', err);
   }
 
   return null;
