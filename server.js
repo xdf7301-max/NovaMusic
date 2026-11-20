@@ -29,10 +29,22 @@ const audioUrlCache = new Map();
 let ytdlInstance = null;
 
 // Inicializar ytdl de forma lazy
+// Se configuran clientes que NO requieren el reproductor (worker_threads),
+// que falla en entornos como Render sin worker_threads.
+// Orden: VisionOS (no necesita player), TV (HTML5), WebEmbedded, etc.
+const PREFERRED_CLIENTS = [
+  'visionos',
+  'tv',
+  'web_embedded',
+  'mweb',
+  'web_creator',
+  'web_music',
+];
+
 async function getYtdl() {
   if (!ytdlInstance) {
     const { Ytdl } = await import('@distube/ytdl-core');
-    ytdlInstance = new Ytdl();
+    ytdlInstance = new Ytdl({ clients: PREFERRED_CLIENTS });
   }
   return ytdlInstance;
 }
@@ -41,42 +53,61 @@ async function getYtdl() {
  * Extrae URLs de formato de audio directamente del HTML de la página de YouTube.
  * Sirve como respaldo cuando ytdl-core no puede resolver el reproductor
  * (p. ej. entornos sin worker_threads como Render).
+ * Incluye reintentos con jitter para manejar rate limiting (429).
  */
 async function extractAudioUrlsFromPage(videoId) {
-  const res = await fetch(
-    `https://www.youtube.com/watch?v=${videoId}`,
-    {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-      },
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(
+        `https://www.youtube.com/watch?v=${videoId}`,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml',
+          },
+        }
+      );
+      if (res.status === 429) {
+        // Rate limited: esperar con jitter antes de reintentar
+        const wait = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
+        await new Promise((r) => setTimeout(r, wait));
+        lastErr = new Error(`YouTube page fetch failed: 429`);
+        continue;
+      }
+      if (!res.ok) throw new Error(`YouTube page fetch failed: ${res.status}`);
+      const html = await res.text();
+
+      // Buscar ytInitialPlayerResponse dentro del HTML
+      const match = html.match(/var ytInitialPlayerResponse = (\{.*?\});\s*<\/script>/s);
+      if (!match) throw new Error('ytInitialPlayerResponse not found in page');
+
+      let data;
+      try {
+        data = JSON.parse(match[1]);
+      } catch (e) {
+        // JSON.parse puede fallar si el objeto contiene funciones; intentar extraer streamingData por separado
+        const streamingMatch = html.match(/"streamingData":(\{.*?\}),"playabilityStatus"/s);
+        if (!streamingMatch) throw new Error('streamingData not found in page');
+        data = { streamingData: JSON.parse(streamingMatch[1]) };
+      }
+
+      const streamingData = data?.streamingData;
+      if (!streamingData) throw new Error('No streamingData in YouTube page');
+
+      const formats = [...(streamingData.formats || []), ...(streamingData.adaptiveFormats || [])];
+      const audioFormats = formats.filter(
+        (f) => f.mimeType?.startsWith('audio/') && (f.url || f.signatureCipher)
+      );
+      return audioFormats;
+    } catch (err) {
+      lastErr = err;
+      // Pequeña pausa antes de reintentar
+      await new Promise((r) => setTimeout(r, 1000));
     }
-  );
-  if (!res.ok) throw new Error(`YouTube page fetch failed: ${res.status}`);
-  const html = await res.text();
-
-  // Buscar ytInitialPlayerResponse dentro del HTML
-  const match = html.match(/var ytInitialPlayerResponse = (\{.*?\});\s*<\/script>/s);
-  if (!match) throw new Error('ytInitialPlayerResponse not found in page');
-
-  let data;
-  try {
-    data = JSON.parse(match[1]);
-  } catch (e) {
-    // JSON.parse puede fallar si el objeto contiene funciones; intentar extraer streamingData por separado
-    const streamingMatch = html.match(/"streamingData":(\{.*?\}),"playabilityStatus"/s);
-    if (!streamingMatch) throw new Error('streamingData not found in page');
-    data = { streamingData: JSON.parse(streamingMatch[1]) };
   }
-
-  const streamingData = data?.streamingData;
-  if (!streamingData) throw new Error('No streamingData in YouTube page');
-
-  const formats = [...(streamingData.formats || []), ...(streamingData.adaptiveFormats || [])];
-  const audioFormats = formats.filter(
-    (f) => f.mimeType?.startsWith('audio/') && (f.url || f.signatureCipher)
-  );
-  return audioFormats;
+  throw lastErr;
 }
 
 /**
