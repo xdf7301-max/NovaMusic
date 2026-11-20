@@ -31,10 +31,11 @@ let ytdlInstance = null;
 // Inicializar ytdl de forma lazy
 // Se configuran clientes que NO requieren el reproductor (worker_threads),
 // que falla en entornos como Render sin worker_threads.
-// Orden: VisionOS (no necesita player), TV (HTML5), WebEmbedded, etc.
+// visionos y web_embedded devuelven URLs de audio directas (sin signatureCipher),
+// que pueden reproducirse sin necesidad de descifrar firmas.
+// Nota: tv devuelve URLs que responden 403, por lo que se excluye.
 const PREFERRED_CLIENTS = [
   'visionos',
-  'tv',
   'web_embedded',
   'mweb',
   'web_creator',
