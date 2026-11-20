@@ -1,8 +1,16 @@
 {
-    "nativeVersion":  "1.0.0",
+    "changelog":  "✨ Actualización Visual v1.0.1: Nuevo estilo Emerald Glow para NovaMusic, interfaz optimizada con bordes sutiles de resplandor y controles táctiles mejorados sin reinstalar APK.",
     "version":  "1.0.1",
+    "nativeVersion":  "1.0.0",
     "assets":  [
-
+                   {
+                       "path":  "theme.css",
+                       "url":  "https://raw.githubusercontent.com/xdf7301-max/NovaMusic/main/updates/theme.css",
+                       "name":  "Tema Visual Emerald Pro",
+                       "sha256":  "e8c6eafb51719aef70b7833cf5c7b8eb04742ad33e86ae9b0c59bae5dbd6486d",
+                       "type":  "css"
+                   }
                ],
-    "changelog":  "Mejora de interfaz y reproducción de música con YouTube IFrame Engine. Descargas offline y modo MP3 habilitados."
+    "releaseDate":  "2026-11-20",
+    "title":  "Actualización Visual Emerald Pro"
 }
