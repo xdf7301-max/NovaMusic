@@ -2,18 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Cache en memoria para URLs de audio directo
+// Cache en memoria para URLs de audio directo (solo en modo dev)
 const audioUrlCache = new Map();
 
-// Plugin de streaming de audio — solo activo en modo desarrollo (npm run dev)
-// En producción / GitHub Pages este plugin no hace nada (configureServer no se ejecuta en build)
+// Plugin de streaming — solo activo en modo desarrollo (npm run dev)
+// Durante `npm run build` (GitHub Actions), configureServer no se ejecuta
 function musicStreamPlugin() {
   return {
     name: 'music-stream-plugin',
-    // configureServer solo corre en dev, nunca durante `npm run build`
     async configureServer(server) {
-      // Importaciones dinámicas: se cargan solo cuando el servidor dev arranca
-      // Así no afectan el build de producción ni GitHub Actions
       let Ytdl, Readable, ytdl;
       try {
         const ytdlModule = await import('@distube/ytdl-core');
@@ -27,7 +24,7 @@ function musicStreamPlugin() {
         return;
       }
 
-      // 1. Endpoint para buscar el ID de la canción en YouTube
+      // Endpoint: buscar videoId de YouTube
       server.middlewares.use('/api/yt-search', async (req, res) => {
         try {
           const url = new URL(req.url, 'http://localhost');
@@ -38,26 +35,16 @@ function musicStreamPlugin() {
             res.end(JSON.stringify({ error: 'Falta parámetro q' }));
             return;
           }
-
-          const query = `${q} audio`;
           const ytRes = await fetch(
-            `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-            {
-              headers: {
-                'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-              },
-            }
+            `https://www.youtube.com/results?search_query=${encodeURIComponent(q + ' audio')}`,
+            { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } }
           );
           const text = await ytRes.text();
           const regex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
           const matches = [...text.matchAll(regex)].map((m) => m[1]);
           const unique = [...new Set(matches)];
-          const videoId = unique.length > 0 ? unique[0] : null;
-
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ videoId, matches: unique.slice(0, 10) }));
+          res.end(JSON.stringify({ videoId: unique[0] || null, matches: unique.slice(0, 10) }));
         } catch (err) {
           res.statusCode = 500;
           res.setHeader('Content-Type', 'application/json');
@@ -65,55 +52,32 @@ function musicStreamPlugin() {
         }
       });
 
-      // 2. Endpoint para transmitir audio completo sin restricciones de embedding
+      // Endpoint: transmitir audio completo (sin restricciones de embedding)
       server.middlewares.use('/api/stream-audio', async (req, res) => {
         try {
           const url = new URL(req.url, 'http://localhost');
           const id = url.searchParams.get('id');
-          if (!id) {
-            res.statusCode = 400;
-            res.end('Falta id');
-            return;
-          }
+          if (!id) { res.statusCode = 400; res.end('Falta id'); return; }
 
           let targetUrl = audioUrlCache.get(id);
           if (!targetUrl) {
             const info = await ytdl.getInfo(id);
-            const audioFormats = info.formats.filter(
-              (f) => f.hasAudio && !f.hasVideo && f.url
-            );
-            if (!audioFormats.length) {
-              res.statusCode = 404;
-              res.end('Formato de audio no encontrado');
-              return;
-            }
-            targetUrl = audioFormats[0].url;
+            const formats = info.formats.filter((f) => f.hasAudio && !f.hasVideo && f.url);
+            if (!formats.length) { res.statusCode = 404; res.end('Sin formato de audio'); return; }
+            targetUrl = formats[0].url;
             audioUrlCache.set(id, targetUrl);
           }
 
-          // Soporte Range para seek instantáneo
-          const headers = {};
-          if (req.headers.range) {
-            headers['Range'] = req.headers.range;
-          }
-
+          const headers = req.headers.range ? { Range: req.headers.range } : {};
           const audioRes = await fetch(targetUrl, { headers });
           res.statusCode = audioRes.status;
-          res.setHeader(
-            'Content-Type',
-            audioRes.headers.get('content-type') || 'audio/mp4'
-          );
-          if (audioRes.headers.get('content-length')) {
-            res.setHeader('Content-Length', audioRes.headers.get('content-length'));
-          }
-          if (audioRes.headers.get('content-range')) {
-            res.setHeader('Content-Range', audioRes.headers.get('content-range'));
-          }
+          res.setHeader('Content-Type', audioRes.headers.get('content-type') || 'audio/mp4');
+          if (audioRes.headers.get('content-length')) res.setHeader('Content-Length', audioRes.headers.get('content-length'));
+          if (audioRes.headers.get('content-range')) res.setHeader('Content-Range', audioRes.headers.get('content-range'));
           res.setHeader('Accept-Ranges', 'bytes');
-
           Readable.fromWeb(audioRes.body).pipe(res);
         } catch (err) {
-          console.error('Error transmitiendo audio:', err);
+          console.error('Error streaming audio:', err);
           res.statusCode = 500;
           res.end(err.message);
         }
@@ -123,11 +87,13 @@ function musicStreamPlugin() {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
-  base: '/NovaMusic/',
+export default defineConfig(({ command }) => ({
+  // base solo en build (producción / GitHub Pages)
+  // en dev (npm run dev) se usa '/' para que 127.0.0.1:5173 funcione normal
+  base: command === 'build' ? '/NovaMusic/' : '/',
   plugins: [
     react(),
     tailwindcss(),
     musicStreamPlugin(),
   ],
-})
+}))

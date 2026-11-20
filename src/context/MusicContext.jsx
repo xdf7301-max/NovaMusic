@@ -166,20 +166,15 @@ export const MusicProvider = ({ children }) => {
       if (currentTrack.isOnline) {
         setIsLoadingAudio(true);
 
-        // Detectar si el servidor local de streaming está disponible (dev) o no (GitHub Pages)
-        const isStreamingAvailable = window.location.hostname === '127.0.0.1' ||
-          window.location.hostname === 'localhost';
-
-        // Si ya tiene la URL de streaming directa (cacheada de sesión previa)
-        if (currentTrack.streamUrl && isStreamingAvailable) {
+        // Si ya tiene la URL de streaming cacheada, usarla directamente
+        if (currentTrack.streamUrl) {
           audio.src = currentTrack.streamUrl;
-        } else if (isStreamingAvailable) {
-          // Modo desarrollo: usar streaming completo vía /api/stream-audio (canción entera)
+        } else {
+          // Buscar el videoId de YouTube para streaming completo
           let videoId = currentTrack.youtubeId;
           if (!videoId) {
             const source = await getFullSongSource(currentTrack.artist, currentTrack.title);
-            if (currentToken !== loadTokenRef.current) return; // Se cambió de canción mientras cargaba
-
+            if (currentToken !== loadTokenRef.current) return;
             if (source && source.videoId) {
               videoId = source.videoId;
               currentTrack.youtubeId = videoId;
@@ -187,13 +182,15 @@ export const MusicProvider = ({ children }) => {
           }
 
           if (videoId) {
-            const streamUrl = `/api/stream-audio?id=${videoId}`;
+            // Usar el servidor de streaming: local en dev, Render en producción
+            const streamBase = import.meta.env.VITE_STREAM_API_URL || '';
+            const streamUrl = `${streamBase}/api/stream-audio?id=${videoId}`;
             currentTrack.streamUrl = streamUrl;
             audio.src = streamUrl;
           } else if (currentTrack.previewUrl) {
-            // Respaldo: preview de iTunes si no se encontró video
+            // Último recurso: preview de 30s de iTunes
             audio.src = currentTrack.previewUrl;
-            showToast(`Reproduciendo preview de "${currentTrack.title}" (30s).`, 'info');
+            showToast(`Preview de 30s: "${currentTrack.title}". Instala el proyecto en local para canción completa.`, 'info');
             setIsLoadingAudio(false);
           } else {
             showToast(`No se encontró fuente para "${currentTrack.title}".`, 'warning');
@@ -201,21 +198,9 @@ export const MusicProvider = ({ children }) => {
             setIsPlaying(false);
             return;
           }
-        } else {
-          // Modo GitHub Pages / producción: usar preview de iTunes (30s, CORS abierto)
-          if (currentTrack.previewUrl) {
-            audio.src = currentTrack.previewUrl;
-            showToast(`Vista pública: reproduciendo preview de 30s de "${currentTrack.title}". Para canción completa, ejecuta el proyecto en local.`, 'info');
-            setIsLoadingAudio(false);
-          } else {
-            showToast(`"${currentTrack.title}" no tiene preview disponible en la versión pública.`, 'warning');
-            setIsLoadingAudio(false);
-            setIsPlaying(false);
-            return;
-          }
         }
 
-        // El loading se quita cuando el evento 'canplay' se dispara (listener en el useEffect anterior)
+        // Loading se quita con el evento 'canplay'
       } else {
         // Archivo local del usuario o demo integrada
         audio.src = currentTrack.audioUrl;
