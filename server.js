@@ -80,8 +80,10 @@ async function extractAudioUrlsFromPage(videoId) {
       if (!res.ok) throw new Error(`YouTube page fetch failed: ${res.status}`);
       const html = await res.text();
 
-      // Buscar ytInitialPlayerResponse dentro del HTML
-      const match = html.match(/var ytInitialPlayerResponse = (\{.*?\});\s*<\/script>/s);
+      // Buscar ytInitialPlayerResponse dentro del HTML.
+      // YouTube puede cambiar la forma de serializarlo, por lo que usamos un regex
+      // que capture hasta el siguiente </script> y recortamos el punto y coma final.
+      const match = html.match(/ytInitialPlayerResponse\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/);
       if (!match) throw new Error('ytInitialPlayerResponse not found in page');
 
       let data;
@@ -89,7 +91,7 @@ async function extractAudioUrlsFromPage(videoId) {
         data = JSON.parse(match[1]);
       } catch (e) {
         // JSON.parse puede fallar si el objeto contiene funciones; intentar extraer streamingData por separado
-        const streamingMatch = html.match(/"streamingData":(\{.*?\}),"playabilityStatus"/s);
+        const streamingMatch = html.match(/"streamingData"\s*:\s*(\{[\s\S]*?\})\s*[,}]/);
         if (!streamingMatch) throw new Error('streamingData not found in page');
         data = { streamingData: JSON.parse(streamingMatch[1]) };
       }
@@ -133,6 +135,27 @@ async function resolveAudioUrl(videoId) {
     }
   } catch (err) {
     console.warn(`[resolveAudioUrl] ytdl-core falló para ${videoId}:`, err.message);
+  }
+
+  // 1b. Respaldo: usar un cliente específico que devuelva URLs directas (sin signatureCipher)
+  // visionos/web_embedded/web_music devuelven URLs listas para reproducir, que sí son
+  // accesibles desde IPs de datacenter como la de Render (YouTube no bloquea la URL final).
+  // Se prueba con un único cliente para evitar el coste de multiples getinfo.
+  try {
+    const { Ytdl } = await import('@distube/ytdl-core');
+    const fallback = new Ytdl({ clients: ['visionos', 'web_embedded', 'web_music'] });
+    const info = await fallback.getInfo(videoId);
+    const formats = info.formats.filter((f) => f.hasAudio && !f.hasVideo);
+    const direct = formats.filter((f) => f.url && !f.signatureCipher);
+    if (direct.length) {
+      const best = direct.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+      if (best.url) {
+        console.log(`[resolveAudioUrl] URL directa (visionos) para ${videoId}`);
+        return best.url;
+      }
+    }
+  } catch (err) {
+    console.warn(`[resolveAudioUrl] ytdl-core (visionos) falló para ${videoId}:`, err.message);
   }
 
   // 2. Respaldo: extraer directamente del HTML de YouTube (no requiere worker_threads)

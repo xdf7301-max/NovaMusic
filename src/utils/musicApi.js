@@ -15,12 +15,12 @@ function getSearchBase() {
 // Invidious es un espejo de YouTube de código abierto con CORS habilitado.
 // Con ?local=true, las URLs de audio pasan por el proxy de Invidious (sin restricciones).
 const INVIDIOUS_INSTANCES = [
-  'https://invidious.snopyta.org',
-  'https://invidious.kavin.rocks',
   'https://invidious.projectsegfau.lt',
   'https://inv.riverside.rocks',
   'https://invidious.nerdvpn.de',
   'https://vid.puffyan.us',
+  'https://invidious.snopyta.org',
+  'https://invidious.kavin.rocks',
 ];
 
 export async function getInvidiousStreamUrl(videoId) {

@@ -182,7 +182,10 @@ export const MusicProvider = ({ children }) => {
           }
 
           if (videoId) {
-            // 1. Intentar el servidor de streaming (Vite dev proxy o Render)
+            // 1. Intentar el servidor de streaming (Vite dev proxy o Render).
+            // El probe usa un timeout generoso (15s): en Render la primera resolución
+            // de URL puede tardar ~50s (ytdl-core + visionos), y con 4s el frontend
+            // abandonaba el probe y caía al preview de 30s de iTunes.
             const streamBase = getStreamBase();
             const isLocal = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
             const streamUrl = isLocal
@@ -192,7 +195,7 @@ export const MusicProvider = ({ children }) => {
             // Probar la URL del backend; si falla, usar Invidious como respaldo
             let backendOk = false;
             try {
-              const probe = await fetch(streamUrl, { method: 'HEAD', signal: AbortSignal.timeout(4000) });
+              const probe = await fetch(streamUrl, { method: 'HEAD', signal: AbortSignal.timeout(15000) });
               backendOk = probe.ok || probe.status === 206;
             } catch {
               backendOk = false;
