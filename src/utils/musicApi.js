@@ -1,5 +1,20 @@
 // Servicio de Búsqueda y Transmisión de Música Completa
-// Obtiene el catálogo completo de canciones de los artistas y resuelve múltiples fuentes de audio
+// En desarrollo local usa el servidor Vite, en producción usa el backend de Render
+
+// URL base del servidor de streaming
+// - Local (127.0.0.1): cadena vacía → usa proxy de Vite (/api/yt-search)
+// - GitHub Pages: URL del backend en Render.com
+function getStreamBase() {
+  if (typeof window !== 'undefined') {
+    const isLocal = window.location.hostname === '127.0.0.1' ||
+                    window.location.hostname === 'localhost';
+    if (isLocal) return '';
+  }
+  // En producción: usa VITE_STREAM_API_URL (GitHub Secret) o la URL de Render directamente
+  return import.meta.env.VITE_STREAM_API_URL || 'https://nova-music-backend-mhxu.onrender.com';
+}
+
+export { getStreamBase };
 
 export async function searchGlobalMusic(query, limit = 150) {
   if (!query || !query.trim()) return [];
@@ -94,13 +109,14 @@ export async function searchGlobalMusic(query, limit = 150) {
   }
 }
 
-// Resuelve múltiples IDs de video de respaldo para garantizar reproducción continua sin errores
+// Resuelve el videoId de YouTube para streaming completo
 export async function getFullSongSource(artist, title) {
   const query = `${artist} ${title}`;
+  const base = getStreamBase();
 
-  // 1. Probar endpoint local de Vite
+  // 1. Usar backend de streaming (Vite dev o Render.com en producción)
   try {
-    const res = await fetch(`/api/yt-search?q=${encodeURIComponent(query)}`);
+    const res = await fetch(`${base}/api/yt-search?q=${encodeURIComponent(query)}`);
     if (res.ok) {
       const data = await res.json();
       if (data.videoId) {
@@ -111,10 +127,10 @@ export async function getFullSongSource(artist, title) {
       }
     }
   } catch (e) {
-    console.warn('Endpoint local no disponible, probando respaldo...', e);
+    console.warn('Backend no disponible, probando respaldo CORS...', e);
   }
 
-  // 2. Respaldo mediante proxy público CORS
+  // 2. Respaldo mediante proxy público CORS (cuando no hay backend)
   try {
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' audio')}`;
     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(searchUrl)}`;
@@ -125,14 +141,11 @@ export async function getFullSongSource(artist, title) {
       const matches = [...(data.contents || '').matchAll(regex)].map((m) => m[1]);
       const unique = [...new Set(matches)];
       if (unique.length > 0) {
-        return {
-          videoId: unique[0],
-          matches: unique.slice(0, 10)
-        };
+        return { videoId: unique[0], matches: unique.slice(0, 10) };
       }
     }
   } catch (err) {
-    console.error('Error en respaldo de búsqueda de canción completa:', err);
+    console.error('Error en respaldo de búsqueda:', err);
   }
 
   return null;

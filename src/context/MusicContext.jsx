@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { MOCK_SONGS, MOCK_ALBUMS, MOCK_PLAYLISTS, MOCK_GENRES, MOCK_ARTISTS } from '../data/mockData';
 import { synthFallback } from '../utils/audioSynth';
-import { getFullSongSource } from '../utils/musicApi';
+import { getFullSongSource, getStreamBase } from '../utils/musicApi';
 
 const MusicContext = createContext();
 
@@ -183,8 +183,11 @@ export const MusicProvider = ({ children }) => {
 
           if (videoId) {
             // Usar el servidor de streaming: local en dev, Render en producción
-            const streamBase = import.meta.env.VITE_STREAM_API_URL || '';
-            const streamUrl = `${streamBase}/api/stream-audio?id=${videoId}`;
+            const streamBase = import.meta.env.VITE_STREAM_API_URL || 'https://nova-music-backend-mhxu.onrender.com';
+            const isLocal = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+            const streamUrl = isLocal
+              ? `/api/stream-audio?id=${videoId}`
+              : `${streamBase}/api/stream-audio?id=${videoId}`;
             currentTrack.streamUrl = streamUrl;
             audio.src = streamUrl;
           } else if (currentTrack.previewUrl) {
