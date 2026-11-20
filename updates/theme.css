@@ -1,0 +1,21 @@
+/* NovaMusic Cloud Update v1.0.1 - Tema Emerald Pro */
+:root {
+  --nova-glow: rgba(30, 215, 96, 0.45);
+  --nova-border-glow: 0 0 15px rgba(30, 215, 96, 0.35);
+}
+
+.nova-update-badge {
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.5) !important;
+}
+
+/* Efecto de resplandor suave para tarjetas de música */
+.group:hover {
+  transform: translateY(-2px);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* Barra lateral y cabecera con toque premium */
+aside {
+  border-right: 1px solid rgba(30, 215, 96, 0.15) !important;
+}
