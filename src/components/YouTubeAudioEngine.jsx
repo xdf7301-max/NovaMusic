@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMusic } from '../context/MusicContext';
-import { X, Tv } from 'lucide-react';
+import { X } from 'lucide-react';
 
 export default function YouTubeAudioEngine() {
   const {
@@ -26,9 +26,8 @@ export default function YouTubeAudioEngine() {
   const [isYTReady, setIsYTReady] = useState(false);
   const timeIntervalRef = useRef(null);
   const pendingVideoIdRef = useRef(null);
-  const lastStateRef = useRef(null);
 
-  // 1. Cargar script de la API de YouTube IFrame de forma segura
+  // 1. Cargar script de la API de YouTube IFrame
   useEffect(() => {
     if (!window.YT) {
       const tag = document.createElement('script');
@@ -82,6 +81,7 @@ export default function YouTubeAudioEngine() {
             modestbranding: 1,
             rel: 0,
             playsinline: 1,
+            enablejsapi: 1,
             origin: window.location.origin
           },
           events: {
@@ -89,13 +89,10 @@ export default function YouTubeAudioEngine() {
               try {
                 event.target.setVolume(volume * 100);
                 if (isMuted) event.target.mute();
-                if (isPlaying) {
-                  event.target.playVideo();
-                }
+                event.target.playVideo();
               } catch (e) {}
             },
             onStateChange: (event) => {
-              lastStateRef.current = event.data;
               // 1: Playing
               if (event.data === 1) {
                 setIsPlaying(true);
@@ -149,13 +146,11 @@ export default function YouTubeAudioEngine() {
         console.error('Error instanciando YT Player:', err);
       }
     } else {
-      // El reproductor ya existe, cargar el nuevo videoId
+      // El reproductor ya existe, cargar el nuevo videoId y reproducir
       try {
         if (typeof ytPlayerRef.current.loadVideoById === 'function') {
           ytPlayerRef.current.loadVideoById(activeVideoId);
-          if (isPlaying) {
-            ytPlayerRef.current.playVideo();
-          }
+          ytPlayerRef.current.playVideo();
         }
       } catch (err) {
         console.error('Error cargando videoId:', err);
@@ -169,12 +164,12 @@ export default function YouTubeAudioEngine() {
       const vid = pendingVideoIdRef.current;
       pendingVideoIdRef.current = null;
       if (vid && !ytPlayerRef.current) {
-        // Se ejecuta por el hook anterior
+        // Se ejecuta por el hook anterior al actualizarse isYTReady
       }
     }
   }, [isYTReady]);
 
-  // 3. Sincronización del tiempo transcurrido (barra de progreso)
+  // 3. Sincronización del tiempo transcurrido (barra de progreso y segundero)
   useEffect(() => {
     if (timeIntervalRef.current) clearInterval(timeIntervalRef.current);
 
@@ -185,6 +180,10 @@ export default function YouTubeAudioEngine() {
             const cur = ytPlayerRef.current.getCurrentTime();
             if (cur !== undefined && !isNaN(cur)) {
               setCurrentTime(Math.round(cur));
+            }
+            const dur = ytPlayerRef.current.getDuration();
+            if (dur && !isNaN(dur) && dur > 0) {
+              setDuration(Math.round(dur));
             }
           } catch (e) {}
         }
@@ -198,15 +197,16 @@ export default function YouTubeAudioEngine() {
 
   return (
     <>
-      {/* Contenedor del reproductor de YouTube:
-          - Modo normal: tamaño estándar (320x180) pero posicionado fuera de pantalla para reproducción invisible de fondo.
-          - Modo Canvas: card flotante con diseño elegante estilo Spotify en la esquina inferior derecha.
+      {/* Contenedor del reproductor:
+          - Modo Audio Normal: Permanece en el viewport (detrás de la barra del reproductor z-30 vs z-40)
+            para que Chrome/Chromium no suspenda el reproductor por estar fuera de pantalla.
+          - Modo Canvas Oficial: Card flotante elegante estilo Spotify en la esquina inferior derecha.
       */}
       <div
-        className={`transition-all duration-300 z-50 ${
+        className={`transition-all duration-300 ${
           showVideoCanvas && currentTrack?.isOnline
-            ? 'fixed bottom-24 right-6 w-80 sm:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-[#1ed760]/30'
-            : 'fixed -bottom-[9999px] -right-[9999px] w-[320px] h-[180px] pointer-events-none opacity-0'
+            ? 'fixed bottom-24 right-6 w-80 sm:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-[#1ed760]/30 z-50 pointer-events-auto'
+            : 'fixed bottom-0 right-4 w-[240px] h-[60px] z-20 overflow-hidden pointer-events-none'
         }`}
       >
         {showVideoCanvas && currentTrack?.isOnline && (
