@@ -79,6 +79,9 @@ export async function searchGlobalMusic(query, limit = 150) {
         releaseDate: item.releaseDate
           ? new Date(item.releaseDate).getFullYear().toString()
           : '2026',
+        // previewUrl: fragmento de 30s de iTunes, funciona en GitHub Pages (CORS abierto)
+        // Es un respaldo cuando el streaming completo (/api/stream-audio) no está disponible
+        previewUrl: item.previewUrl || null,
         isOnline: true,
         plays: 'Global'
       });

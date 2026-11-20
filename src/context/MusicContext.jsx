@@ -166,11 +166,15 @@ export const MusicProvider = ({ children }) => {
       if (currentTrack.isOnline) {
         setIsLoadingAudio(true);
 
-        // Si ya tiene la URL de streaming directa
-        if (currentTrack.streamUrl) {
+        // Detectar si el servidor local de streaming está disponible (dev) o no (GitHub Pages)
+        const isStreamingAvailable = window.location.hostname === '127.0.0.1' ||
+          window.location.hostname === 'localhost';
+
+        // Si ya tiene la URL de streaming directa (cacheada de sesión previa)
+        if (currentTrack.streamUrl && isStreamingAvailable) {
           audio.src = currentTrack.streamUrl;
-        } else {
-          // Obtener el ID de la canción completa
+        } else if (isStreamingAvailable) {
+          // Modo desarrollo: usar streaming completo vía /api/stream-audio (canción entera)
           let videoId = currentTrack.youtubeId;
           if (!videoId) {
             const source = await getFullSongSource(currentTrack.artist, currentTrack.title);
@@ -186,8 +190,25 @@ export const MusicProvider = ({ children }) => {
             const streamUrl = `/api/stream-audio?id=${videoId}`;
             currentTrack.streamUrl = streamUrl;
             audio.src = streamUrl;
+          } else if (currentTrack.previewUrl) {
+            // Respaldo: preview de iTunes si no se encontró video
+            audio.src = currentTrack.previewUrl;
+            showToast(`Reproduciendo preview de "${currentTrack.title}" (30s).`, 'info');
+            setIsLoadingAudio(false);
           } else {
             showToast(`No se encontró fuente para "${currentTrack.title}".`, 'warning');
+            setIsLoadingAudio(false);
+            setIsPlaying(false);
+            return;
+          }
+        } else {
+          // Modo GitHub Pages / producción: usar preview de iTunes (30s, CORS abierto)
+          if (currentTrack.previewUrl) {
+            audio.src = currentTrack.previewUrl;
+            showToast(`Vista pública: reproduciendo preview de 30s de "${currentTrack.title}". Para canción completa, ejecuta el proyecto en local.`, 'info');
+            setIsLoadingAudio(false);
+          } else {
+            showToast(`"${currentTrack.title}" no tiene preview disponible en la versión pública.`, 'warning');
             setIsLoadingAudio(false);
             setIsPlaying(false);
             return;
@@ -195,7 +216,6 @@ export const MusicProvider = ({ children }) => {
         }
 
         // El loading se quita cuando el evento 'canplay' se dispara (listener en el useEffect anterior)
-        // No llamar setIsLoadingAudio(false) aquí para evitar el parpadeo del spinner
       } else {
         // Archivo local del usuario o demo integrada
         audio.src = currentTrack.audioUrl;

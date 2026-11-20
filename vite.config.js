@@ -110,6 +110,7 @@ function musicStreamPlugin() {
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/NovaMusic/',
   plugins: [
     react(),
     tailwindcss(),
