@@ -1,20 +1,64 @@
 // Servicio de Búsqueda y Transmisión de Música Completa
-// En desarrollo local usa el servidor Vite, en producción usa el backend de Render
+// Local: Vite dev server | GitHub Pages: Invidious (espejo YT con CORS)
 
-// URL base del servidor de streaming
-// - Local (127.0.0.1): cadena vacía → usa proxy de Vite (/api/yt-search)
-// - GitHub Pages: URL del backend en Render.com
-function getStreamBase() {
+// ─── URL base para búsqueda (yt-search) ──────────────────────────────────────
+function getSearchBase() {
   if (typeof window !== 'undefined') {
     const isLocal = window.location.hostname === '127.0.0.1' ||
                     window.location.hostname === 'localhost';
-    if (isLocal) return '';
+    if (isLocal) return ''; // Vite dev proxy
   }
-  // En producción: usa VITE_STREAM_API_URL (GitHub Secret) o la URL de Render directamente
   return import.meta.env.VITE_STREAM_API_URL || 'https://nova-music-backend-mhxu.onrender.com';
 }
 
-export { getStreamBase };
+// ─── Streaming: Invidious para GitHub Pages ───────────────────────────────────
+// Invidious es un espejo de YouTube de código abierto con CORS habilitado.
+// Con ?local=true, las URLs de audio pasan por el proxy de Invidious (sin restricciones).
+const INVIDIOUS_INSTANCES = [
+  'https://invidious.snopyta.org',
+  'https://invidious.kavin.rocks',
+  'https://invidious.projectsegfau.lt',
+  'https://inv.riverside.rocks',
+  'https://invidious.nerdvpn.de',
+  'https://vid.puffyan.us',
+];
+
+export async function getInvidiousStreamUrl(videoId) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+
+      const res = await fetch(
+        `${instance}/api/v1/videos/${videoId}?local=true`,
+        { signal: controller.signal, headers: { Accept: 'application/json' } }
+      );
+      clearTimeout(timer);
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      const audioFormats = (data.adaptiveFormats || []).filter(
+        (f) => f.type?.startsWith('audio/') && f.url
+      );
+      if (!audioFormats.length) continue;
+
+      // Elegir la mejor calidad de audio
+      const best = audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+      let url = best.url;
+      // Si la URL es relativa, prepend del dominio de la instancia
+      if (url.startsWith('/')) url = instance + url;
+      return url;
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.warn(`[Invidious] ${instance} falló:`, e.message);
+      }
+    }
+  }
+  return null;
+}
+
+// Alias used by MusicContext.jsx — kept for backwards compatibility
+export const getStreamBase = getSearchBase;
 
 export async function searchGlobalMusic(query, limit = 150) {
   if (!query || !query.trim()) return [];
@@ -112,7 +156,7 @@ export async function searchGlobalMusic(query, limit = 150) {
 // Resuelve el videoId de YouTube para streaming completo
 export async function getFullSongSource(artist, title) {
   const query = `${artist} ${title}`;
-  const base = getStreamBase();
+  const base = getSearchBase();
 
   // 1. Usar backend de streaming (Vite dev o Render.com en producción)
   try {

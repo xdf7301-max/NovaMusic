@@ -37,6 +37,88 @@ async function getYtdl() {
   return ytdlInstance;
 }
 
+/**
+ * Extrae URLs de formato de audio directamente del HTML de la página de YouTube.
+ * Sirve como respaldo cuando ytdl-core no puede resolver el reproductor
+ * (p. ej. entornos sin worker_threads como Render).
+ */
+async function extractAudioUrlsFromPage(videoId) {
+  const res = await fetch(
+    `https://www.youtube.com/watch?v=${videoId}`,
+    {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+      },
+    }
+  );
+  if (!res.ok) throw new Error(`YouTube page fetch failed: ${res.status}`);
+  const html = await res.text();
+
+  // Buscar ytInitialPlayerResponse dentro del HTML
+  const match = html.match(/var ytInitialPlayerResponse = (\{.*?\});\s*<\/script>/s);
+  if (!match) throw new Error('ytInitialPlayerResponse not found in page');
+
+  let data;
+  try {
+    data = JSON.parse(match[1]);
+  } catch (e) {
+    // JSON.parse puede fallar si el objeto contiene funciones; intentar extraer streamingData por separado
+    const streamingMatch = html.match(/"streamingData":(\{.*?\}),"playabilityStatus"/s);
+    if (!streamingMatch) throw new Error('streamingData not found in page');
+    data = { streamingData: JSON.parse(streamingMatch[1]) };
+  }
+
+  const streamingData = data?.streamingData;
+  if (!streamingData) throw new Error('No streamingData in YouTube page');
+
+  const formats = [...(streamingData.formats || []), ...(streamingData.adaptiveFormats || [])];
+  const audioFormats = formats.filter(
+    (f) => f.mimeType?.startsWith('audio/') && (f.url || f.signatureCipher)
+  );
+  return audioFormats;
+}
+
+/**
+ * Resuelve una URL de audio reproducible para un video de YouTube.
+ * Intenta ytdl-core primero; si falla (sin worker_threads), usa la página de YouTube como respaldo.
+ * Devuelve la mejor URL de audio disponible (sin signatureCipher cuando sea posible).
+ */
+async function resolveAudioUrl(videoId) {
+  // 1. Intento principal: ytdl-core
+  try {
+    const ytdl = await getYtdl();
+    const info = await ytdl.getInfo(videoId);
+    const formats = info.formats.filter(
+      (f) => f.hasAudio && !f.hasVideo && (f.url || f.signatureCipher)
+    );
+    if (formats.length) {
+      // Preferir formatos que NO requieran descifrado de firma (pueden reproducirse directamente)
+      const direct = formats.filter((f) => !f.signatureCipher);
+      const candidates = direct.length ? direct : formats;
+      const best = candidates.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+      if (best.url) return best.url;
+    }
+  } catch (err) {
+    console.warn(`[resolveAudioUrl] ytdl-core falló para ${videoId}:`, err.message);
+  }
+
+  // 2. Respaldo: extraer directamente del HTML de YouTube (no requiere worker_threads)
+  const formats = await extractAudioUrlsFromPage(videoId);
+  if (!formats.length) throw new Error('No se encontró formato de audio en YouTube');
+
+  const direct = formats.filter((f) => f.url && !f.signatureCipher);
+  const candidates = direct.length ? direct : formats;
+  const best = candidates.sort((a, b) => {
+    const bitrateA = parseInt(a.bitrate || a.audioBitrate || 0, 10);
+    const bitrateB = parseInt(b.bitrate || b.audioBitrate || 0, 10);
+    return bitrateB - bitrateA;
+  })[0];
+
+  if (!best.url) throw new Error('URL de audio no disponible');
+  return best.url;
+}
+
 // ─── Health check ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
@@ -82,18 +164,11 @@ app.get('/api/stream-audio', async (req, res) => {
   }
 
   try {
-    const ytdl = await getYtdl();
+    // Resolver URL de audio (con respaldo si ytdl-core falla)
     let targetUrl = audioUrlCache.get(id);
 
     if (!targetUrl) {
-      const info = await ytdl.getInfo(id);
-      const formats = info.formats.filter((f) => f.hasAudio && !f.hasVideo && f.url);
-      if (!formats.length) {
-        return res.status(404).send('No se encontró formato de audio');
-      }
-      // Elegir el formato con mejor calidad de audio
-      const best = formats.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
-      targetUrl = best.url;
+      targetUrl = await resolveAudioUrl(id);
       // Cachear por 3 horas (las URLs de YouTube expiran)
       audioUrlCache.set(id, targetUrl);
       setTimeout(() => audioUrlCache.delete(id), 3 * 60 * 60 * 1000);
@@ -108,23 +183,35 @@ app.get('/api/stream-audio', async (req, res) => {
     const audioRes = await fetch(targetUrl, { headers });
 
     if (!audioRes.ok && audioRes.status !== 206) {
-      // URL expirada, limpiar caché y reintentar
+      // URL expirada o bloqueada, limpiar caché y reintentar una vez
       audioUrlCache.delete(id);
-      return res.status(503).send('URL de audio expirada, intenta de nuevo');
+      console.warn(`[stream-audio] URL no válida para ${id} (status ${audioRes.status})`);
+      return res.status(503).send('URL de audio expirada o bloqueada, intenta de nuevo');
     }
 
     res.status(audioRes.status);
-    res.setHeader('Content-Type', audioRes.headers.get('content-type') || 'audio/mp4');
+    res.setHeader('Content-Type', audioRes.headers.get('content-type') || 'audio/webm');
     res.setHeader('Accept-Ranges', 'bytes');
-    if (audioRes.headers.get('content-length')) {
-      res.setHeader('Content-Length', audioRes.headers.get('content-length'));
+    const contentLength = audioRes.headers.get('content-length');
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
     }
-    if (audioRes.headers.get('content-range')) {
-      res.setHeader('Content-Range', audioRes.headers.get('content-range'));
+    const contentRange = audioRes.headers.get('content-range');
+    if (contentRange) {
+      res.setHeader('Content-Range', contentRange);
     }
 
-    // Transmitir el audio al cliente
-    Readable.fromWeb(audioRes.body).pipe(res);
+    // Transmitir el audio al cliente con manejo de errores de pipe
+    const upstream = Readable.fromWeb(audioRes.body);
+    upstream.on('error', (err) => {
+      console.error('[stream-audio] Error de transmisión:', err.message);
+      if (!res.headersSent) {
+        res.status(500).send('Error de transmisión');
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    });
+    upstream.pipe(res);
   } catch (err) {
     console.error('stream-audio error:', err.message);
     if (!res.headersSent) {
