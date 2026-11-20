@@ -1,19 +1,33 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { Ytdl } from '@distube/ytdl-core'
-import { Readable } from 'node:stream'
 
-const ytdl = new Ytdl();
-// Cache en memoria para URLs de audio directo (expira tras 4 horas)
+// Cache en memoria para URLs de audio directo
 const audioUrlCache = new Map();
 
-// Plugin de búsqueda y streaming de audio directo sin restricciones de incrustación
+// Plugin de streaming de audio — solo activo en modo desarrollo (npm run dev)
+// En producción / GitHub Pages este plugin no hace nada (configureServer no se ejecuta en build)
 function musicStreamPlugin() {
   return {
     name: 'music-stream-plugin',
-    configureServer(server) {
-      // 1. Endpoint para buscar el ID de la canción
+    // configureServer solo corre en dev, nunca durante `npm run build`
+    async configureServer(server) {
+      // Importaciones dinámicas: se cargan solo cuando el servidor dev arranca
+      // Así no afectan el build de producción ni GitHub Actions
+      let Ytdl, Readable, ytdl;
+      try {
+        const ytdlModule = await import('@distube/ytdl-core');
+        Ytdl = ytdlModule.Ytdl;
+        const streamModule = await import('node:stream');
+        Readable = streamModule.Readable;
+        ytdl = new Ytdl();
+        console.log('[NOVA MUSIC] 🎵 Motor de streaming activo (modo desarrollo)');
+      } catch (e) {
+        console.warn('[NOVA MUSIC] ⚠️ Streaming no disponible:', e.message);
+        return;
+      }
+
+      // 1. Endpoint para buscar el ID de la canción en YouTube
       server.middlewares.use('/api/yt-search', async (req, res) => {
         try {
           const url = new URL(req.url, 'http://localhost');
@@ -51,7 +65,7 @@ function musicStreamPlugin() {
         }
       });
 
-      // 2. Endpoint para transmitir audio directo nativo (sin iframes, sin restricciones de VEVO ni errores 150)
+      // 2. Endpoint para transmitir audio completo sin restricciones de embedding
       server.middlewares.use('/api/stream-audio', async (req, res) => {
         try {
           const url = new URL(req.url, 'http://localhost');
@@ -77,7 +91,7 @@ function musicStreamPlugin() {
             audioUrlCache.set(id, targetUrl);
           }
 
-          // Soporte nativo para cabecera Range (permite adelantar o atrasar a cualquier segundo al instante)
+          // Soporte Range para seek instantáneo
           const headers = {};
           if (req.headers.range) {
             headers['Range'] = req.headers.range;
